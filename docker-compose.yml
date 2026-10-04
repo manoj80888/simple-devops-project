@@ -1,0 +1,9 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: simple-devops-app:latest
+    container_name: simple-devops-compose
+    ports:
+      - "5000:5000"
