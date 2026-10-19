@@ -35,6 +35,24 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
+      - name: Diagnose GitHub workflow context
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+        run: |
+          echo "Event: $EVENT_NAME"
+          echo "Repository: $REPOSITORY"
+          echo "Ref: $REF"
+          echo "Workflow ref: $WORKFLOW_REF"
+          echo "Workflow SHA: $WORKFLOW_SHA"
+          echo "Upstream branch: $HEAD_BRANCH"
+          echo "Upstream repository: $HEAD_REPOSITORY"
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -65,7 +83,13 @@ jobs:
           import json
           import os
 
-          image_uri = os.environ["ECR_REGISTRY"] + "/" + os.environ["ECR_REPOSITORY"] + ":" + os.environ["IMAGE_TAG"]
+          image_uri = (
+              os.environ["ECR_REGISTRY"]
+              + "/"
+              + os.environ["ECR_REPOSITORY"]
+              + ":"
+              + os.environ["IMAGE_TAG"]
+          )
           region = os.environ["AWS_REGION"]
           registry = os.environ["ECR_REGISTRY"]
 
@@ -102,7 +126,7 @@ jobs:
             exit 1
           fi
 
-          # Replace the production container after candidate validation.
+          # Replace production after candidate validation.
           docker rm -f simple-devops-app >/dev/null 2>&1 || true
           docker run -d --name simple-devops-app \
             -p 5000:5000 --restart unless-stopped "$IMAGE_URI"
