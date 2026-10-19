@@ -35,23 +35,38 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Diagnose GitHub workflow context
+      - name: Diagnose GitHub OIDC claims
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          REPOSITORY: ${{ github.repository }}
-          REF: ${{ github.ref }}
-          WORKFLOW_REF: ${{ github.workflow_ref }}
-          WORKFLOW_SHA: ${{ github.workflow_sha }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
+        shell: bash
         run: |
-          echo "Event: $EVENT_NAME"
-          echo "Repository: $REPOSITORY"
-          echo "Ref: $REF"
-          echo "Workflow ref: $WORKFLOW_REF"
-          echo "Workflow SHA: $WORKFLOW_SHA"
-          echo "Upstream branch: $HEAD_BRANCH"
-          echo "Upstream repository: $HEAD_REPOSITORY"
+          set -euo pipefail
+
+          TOKEN_JSON=$(curl -fsS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
+
+          OIDC_TOKEN=$(printf '%s' "$TOKEN_JSON" | python3 -c \
+            'import json,sys; print(json.load(sys.stdin)["value"])')
+
+          export OIDC_TOKEN
+
+          python3 - <<'PY'
+          import os
+          import json
+          import base64
+
+          token = os.environ["OIDC_TOKEN"]
+          payload = token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+
+          for key in ("iss", "aud", "sub"):
+              print(f"{key}: {claims.get(key)}")
+          PY
+
+          unset OIDC_TOKEN TOKEN_JSON
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -68,26 +83,31 @@ jobs:
       - name: Build and push Docker image
         env:
           IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
         run: |
           set -euo pipefail
+
           IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
           docker build -t "$IMAGE_URI" .
           docker push "$IMAGE_URI"
+
           echo "IMAGE_URI=$IMAGE_URI" >> "$GITHUB_ENV"
 
       - name: Prepare deployment script
         env:
           IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           python3 - <<'PY'
           import json
           import os
 
           image_uri = (
-              os.environ["ECR_REGISTRY"]
-              + "/"
-              + os.environ["ECR_REPOSITORY"]
-              + ":"
+              os.environ["ECR_REGISTRY"] + "/"
+              + os.environ["ECR_REPOSITORY"] + ":"
               + os.environ["IMAGE_TAG"]
           )
           region = os.environ["AWS_REGION"]
@@ -105,12 +125,13 @@ jobs:
 
           docker pull "$IMAGE_URI"
 
-          # Start the candidate on localhost only.
+          # Start a candidate on localhost only.
           docker rm -f simple-devops-candidate >/dev/null 2>&1 || true
           docker run -d --name simple-devops-candidate \
             -p 127.0.0.1:5001:5000 "$IMAGE_URI"
 
           healthy=0
+
           for i in $(seq 1 20); do
             if curl -fsS http://127.0.0.1:5001/health; then
               healthy=1
@@ -158,6 +179,7 @@ jobs:
       - name: Send deployment command to EC2
         env:
           IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -173,6 +195,7 @@ jobs:
           echo "COMMAND_ID=$COMMAND_ID" >> "$GITHUB_ENV"
 
       - name: Wait for deployment and verify health
+        shell: bash
         run: |
           set -euo pipefail
 
